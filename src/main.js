@@ -48,6 +48,9 @@ function sfx(type) {
     case 'think': f0 = 520; f1 = 880; dur = 0.3; vol = 0.05; wave = 'sine'; break;
     case 'burst': f0 = 880; f1 = 110; dur = 0.4; vol = 0.1; wave = 'sine'; break;
     case 'win': f0 = 523; f1 = 1046; dur = 0.5; vol = 0.08; wave = 'triangle'; break;
+    case 'die': f0 = 520; f1 = 60; dur = 0.55; vol = 0.11; wave = 'sawtooth'; break;
+    case 'respawn': f0 = 300; f1 = 900; dur = 0.22; vol = 0.06; wave = 'sine'; break;
+    case 'tick': f0 = 900; f1 = 900; dur = 0.03; vol = 0.02; wave = 'square'; break;
   }
   o.type = wave;
   o.frequency.setValueAtTime(f0, t0);
@@ -95,6 +98,10 @@ function newGame() {
     hintT: 6,
     reasonScroll: 0,
     score: 0,
+    hitstop: 0,
+    deathT: 0,
+    deaths: 0,
+    reconnecting: 0,
   };
   state = 'play';
   overlayT = 0;
@@ -124,8 +131,6 @@ function updateOverlay(dt) {
   overlayT += dt;
   if (state === 'menu') {
     if (anyStart()) { initAudio(); newGame(); }
-  } else if (state === 'dead') {
-    if (overlayT > 2.2) respawnAtCheckpoint();
   } else if (state === 'win') {
     if (overlayT > 2.6 && anyStart()) { initAudio(); newGame(); }
   }
@@ -136,20 +141,53 @@ function anyStart() {
   return Input.jumpPressed || Input.dashPressed || Input.shotPressed || Input.enterPressed;
 }
 
-function respawnAtCheckpoint() {
+function doRespawn() {
   const p = G.player;
+  const inBoss = G.bossActive && G.boss && !G.boss.dead;
   p.dead = false;
   p.hp = p.maxHp;
-  p.respawn(G.checkpoint.x, G.checkpoint.y);
-  G.enemies = G.enemies.filter(e => !e.dead);
-  state = 'play';
-  overlayT = 0;
+  p.invuln = CFG.feel.respawnInvuln;
+  p.energy = 0;
+  G.bullets.length = 0;
+  if (inBoss) {
+    p.respawn(G.level.bossTrigger + 10, G.level.groundY);
+    const b = G.boss;
+    b.hp = b.maxHp; b.state = 'idle'; b.stateT = 0; b.pearlCd = 1.6;
+    b.sweepCd = 2.0; b.summonCd = 3.0; b.pearls.length = 0; b.puddles.length = 0; b.sweepT = 0;
+    b.x = b.homeX; b.hurtT = 0;
+  } else {
+    p.respawn(G.checkpoint.x, G.checkpoint.y);
+    G.enemies = G.enemies.filter(e => !e.dead);
+  }
+  G.deathT = 0;
+  G.reconnecting = 1.5;
+  shake(0.22, 3);
+  sfx('respawn');
 }
 
 function update(dt) {
   G.t += dt;
   const p = G.player;
   const level = G.level;
+
+  // ── 死亡：世界定格，0.9 秒后原地/检查点重连（不弹菜单、不进结算，节奏不断）
+  if (p.dead) {
+    G.deathT += dt;
+    for (let i = G.particles.length - 1; i >= 0; i--) {
+      const q = G.particles[i];
+      q.x += q.vx * dt * 0.35; q.y += q.vy * dt * 0.35;
+      q.vy += 60 * dt; q.life -= dt;
+      if (q.life <= 0) G.particles.splice(i, 1);
+    }
+    if (shakeT > 0) shakeT -= dt;
+    if (G.reconnecting > 0) G.reconnecting -= dt;
+    if (G.deathT >= CFG.feel.respawnDelay) doRespawn();
+    return;
+  }
+
+  // ── 命中顿帧（打击感）
+  if (G.hitstop > 0) { G.hitstop -= dt; return; }
+  if (G.reconnecting > 0) G.reconnecting -= dt;
 
   // 世界时间（思考模式慢放）
   const worldDt = dt * (p.thinking ? CFG.think.slow : 1);
@@ -168,7 +206,17 @@ function update(dt) {
       sfx('dash');
       for (let i = 0; i < 6; i++) addParticle(p.cx, p.cy, 'rgba(120,220,255,.8)', 3);
     } else if (e.type === 'hurt') { sfx('hurt'); shake(0.35, 4); }
-    else if (e.type === 'die') { state = 'dead'; overlayT = 0; sfx('hurt'); shake(0.6, 6); }
+    else if (e.type === 'die') {
+      sfx('die'); shake(0.75, 7); G.hitstop = 0.14; G.deathT = 0; G.deaths++;
+      for (let i = 0; i < 30; i++) {
+        const a = Math.random() * Math.PI * 2, sp = 40 + Math.random() * 130;
+        G.particles.push({
+          x: p.cx, y: p.cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 60,
+          life: 0.5 + Math.random() * 0.5, max: 1.0,
+          color: i % 3 === 0 ? '#ffffff' : (i % 2 ? '#7fe9ff' : '#2f86c8'), size: 1.4 + Math.random() * 2,
+        });
+      }
+    }
     else if (e.type === 'burst') {
       sfx('burst'); shake(0.4, 6);
       burstEffect(e);
@@ -201,6 +249,7 @@ function update(dt) {
   for (const en of G.enemies) {
     if (en.dead) continue;
     if (p.dashT > 0 && overlap(p, en)) {
+      G.hitstop = Math.max(G.hitstop, CFG.feel.hitstopHeavy);
       if (en.hit(CFG.player.dashDmg)) { onKill(en); }
       else { sfx('hit'); addParticle(en.cx, en.cy, '#ffd76b', 4); }
     }
@@ -215,8 +264,8 @@ function update(dt) {
       if (b.x > en.x && b.x < en.x + en.w && b.y > en.y && b.y < en.y + en.h) {
         p.addEnergy(CFG.think.gainHit);
         addParticle(b.x, b.y, '#7fe9ff', 3);
-        if (en.hit(b.dmg)) onKill(en);
-        else sfx('hit');
+        if (en.hit(b.dmg)) { onKill(en); G.hitstop = Math.max(G.hitstop, CFG.feel.hitstopKill); }
+        else { sfx('hit'); G.hitstop = Math.max(G.hitstop, CFG.feel.hitstopLight); }
         hitSomething = true;
         break;
       }
@@ -227,7 +276,7 @@ function update(dt) {
       p.addEnergy(CFG.think.gainHit);
       addParticle(b.x, b.y, '#ffc2d8', 3);
       if (G.boss.hit(b.dmg)) onBossDefeat();
-      else sfx('hit');
+      else { sfx('hit'); G.hitstop = Math.max(G.hitstop, CFG.feel.hitstopLight); }
       hitSomething = true;
     }
     if (hitSomething) G.bullets.splice(i, 1);
@@ -369,6 +418,7 @@ function draw(dt) {
       t: p.animT, face: p.face, running: p.running,
       air: !p.onGround, dashing: p.dashT > 0,
       thinking: p.thinking, hurtT: p.hurtT,
+      vy: p.vy, blink: p.invuln > 0.05,
     });
   }
   ctx.restore();
@@ -376,7 +426,7 @@ function draw(dt) {
   // 思考模式滤镜
   if (p.thinking) drawThinkFilter();
   drawHUD();
-  if (state === 'dead') drawDead();
+  if (p.dead) drawReconnect();
   if (state === 'win') drawWin();
 }
 
@@ -560,19 +610,50 @@ function drawMenu(dt) {
   ctx.fillText('同人作品 · 角色形象基于 DeepSeek 民间设定 · 非官方', W / 2, H - 8);
 }
 
-function drawDead() {
-  const a = Math.min(0.85, overlayT * 1.6);
-  ctx.fillStyle = `rgba(4,8,14,${a})`;
-  ctx.fillRect(0, 0, W, H);
+function drawReconnect() {
+  const T = CFG.feel.respawnDelay;
+  const k = Math.min(1, G.deathT / T);
+
+  // 故障扫描条
+  for (let i = 0; i < 5; i++) {
+    const y = (G.t * 90 + i * 61) % H;
+    const h = 2 + (i % 3);
+    const off = Math.sin(G.t * 12 + i) * 5 * (1 - k * 0.6);
+    ctx.fillStyle = i % 2 ? 'rgba(255,80,110,.13)' : 'rgba(80,220,255,.11)';
+    ctx.fillRect(off, y, W, h);
+  }
+  // 整体压暗
+  ctx.fillStyle = 'rgba(4,10,18,.62)'; ctx.fillRect(0, 0, W, H);
+
+  // 提示底板
+  const pw = 176, ph = 74, px = W / 2 - pw / 2, py = H / 2 - 40;
+  ctx.fillStyle = 'rgba(6,16,26,.9)';
+  rr(ctx, px, py, pw, ph, 6); ctx.fill();
+  ctx.strokeStyle = 'rgba(120,225,255,.26)'; ctx.lineWidth = 1;
+  rr(ctx, px + 0.5, py + 0.5, pw - 1, ph - 1, 6); ctx.stroke();
+
   ctx.textAlign = 'center';
   ctx.font = 'bold 14px -apple-system,sans-serif';
-  ctx.fillStyle = 'rgba(255,120,140,.95)';
-  ctx.fillText('掉线重连中…', W / 2, H / 2 - 6);
-  const dots = '.'.repeat(1 + Math.floor(overlayT * 3) % 3);
-  ctx.font = '8px ui-monospace,monospace';
-  ctx.fillStyle = 'rgba(180,220,240,.65)';
-  ctx.fillText('reconnect' + dots, W / 2, H / 2 + 10);
+  ctx.fillStyle = 'rgba(255,140,160,.98)';
+  ctx.fillText('连接中断', W / 2, py + 22);
+
+  const dots = '.'.repeat(1 + Math.floor(G.t * 6) % 3);
+  ctx.font = '8px ui-monospace,Menlo,monospace';
+  ctx.fillStyle = 'rgba(190,228,246,.9)';
+  ctx.fillText('重新连接中' + dots, W / 2, py + 36);
+
+  // 进度条
+  const bw = 108, bh = 3, bx = W / 2 - bw / 2, by = py + 45;
+  ctx.fillStyle = 'rgba(255,255,255,.16)';
+  rr(ctx, bx, by, bw, bh, 1.5); ctx.fill();
+  ctx.fillStyle = 'rgba(120,225,255,.95)';
+  rr(ctx, bx, by, bw * k, bh, 1.5); ctx.fill();
+
+  ctx.font = '7.5px -apple-system,sans-serif';
+  ctx.fillStyle = 'rgba(210,236,250,.95)';
+  ctx.fillText('本次掉线 ' + G.deaths + ' 次 · 进度不丢，原地续上', W / 2, py + 63);
 }
+
 
 function drawWin() {
   const a = Math.min(0.9, overlayT * 1.4);
@@ -587,7 +668,7 @@ function drawWin() {
   ctx.fillText('豆包把最后一杯递给你，说：下次别打脸。', W / 2, H / 2 - 4);
   ctx.font = 'bold 10px ui-monospace,monospace';
   ctx.fillStyle = '#9fefff';
-  ctx.fillText('分数 ' + G.score + '   击败 ' + G.kills, W / 2, H / 2 + 16);
+  ctx.fillText('分数 ' + G.score + '   击败 ' + G.kills + '   掉线 ' + G.deaths, W / 2, H / 2 + 16);
   const best = +(localStorage.getItem('ds_seeker_best') || 0);
   ctx.font = '7px -apple-system,sans-serif';
   ctx.fillStyle = 'rgba(160,200,230,.7)';
@@ -622,4 +703,6 @@ window.__dev = {
   setState(s) { state = s; overlayT = 0; },
   newGame,
   warp(x) { if (G) { G.player.x = x; G.player.y = CFG.groundY - G.player.h; } },
+  kill() { if (G && !G.player.dead) { G.player.hp = 0; G.player.dead = true; G.deathT = 0; G.deaths++; sfx('die'); shake(0.75, 7); } },
+  hurt(n) { if (G) G.player.hurt(n, G.player.cx > 0 ? 1 : -1); },
 };

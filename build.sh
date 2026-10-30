@@ -6,8 +6,9 @@ rm -rf dist
 mkdir -p dist
 cp index.html README.md dist/
 cp -r src dist/
-mkdir -p dist/art/web
+mkdir -p dist/art/web dist/art/sprites
 cp art/web/*.jpg dist/art/web/
+cp art/sprites/*.png dist/art/sprites/
 cat > dist/_headers <<'EOF'
 /art/*
   Cache-Control: public, max-age=31536000, immutable

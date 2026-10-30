@@ -59,4 +59,13 @@ export const CFG = {
   },
 
   cam: { lerp: 0.14, lookAhead: 46 },
+
+  // 打击感 / 死亡重连
+  feel: {
+    hitstopLight: 0.030,
+    hitstopHeavy: 0.075,
+    hitstopKill: 0.055,
+    respawnDelay: 0.9,     // 从死亡到重连的定格时长（秒）
+    respawnInvuln: 1.6,    // 重连后无敌时间
+  },
 };

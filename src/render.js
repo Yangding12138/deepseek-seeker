@@ -7,6 +7,83 @@ const C = {
   gold: '#e8c46a', ink: '#101826',
 };
 
+/* ---------- 精灵资源（立绘抠图，见 tools/make_sprites.py） ---------- */
+const HERO_H = 58;
+const _spr = {};
+for (const [k, src] of Object.entries({
+  idle: './art/sprites/hero-idle.png',
+  run:  './art/sprites/hero-run.png',
+  jump: './art/sprites/hero-jump.png',
+})) {
+  const im = new Image();
+  im.src = src;
+  _spr[k] = im;
+}
+
+export function drawHero(ctx, cx, feetY, o = {}) {
+  const t = o.t || 0;
+  const key = o.air ? 'jump' : (o.running ? 'run' : 'idle');
+  const img = _spr[key];
+  if (!img || !img.complete || !img.naturalWidth) {
+    drawHeroVector(ctx, cx, feetY, o);   // 图未就绪时退回矢量版
+    return;
+  }
+
+  // 脚下投影
+  const sh = o.air ? 0.28 : 0.42;
+  ctx.save();
+  ctx.globalAlpha = sh;
+  ctx.fillStyle = 'rgba(2,10,18,.9)';
+  ctx.beginPath();
+  ctx.ellipse(cx, feetY + 1, o.air ? 8 : 11, o.air ? 2.2 : 3, 0, 0, 7);
+  ctx.fill();
+  ctx.restore();
+
+  const h = HERO_H * (key === 'jump' ? 0.97 : 1);
+  let w = h * (img.naturalWidth / img.naturalHeight);
+
+  let sx = 1, sy = 1, rot = 0, bob = 0;
+  if (key === 'run') {
+    bob = -Math.abs(Math.sin(t * 13)) * 1.8;
+    rot = Math.sin(t * 13) * 0.05;
+  } else if (key === 'idle') {
+    sy = 1 + Math.sin(t * 2.2) * 0.014;
+    bob = Math.sin(t * 2.2) * 0.7;
+  } else {
+    const vy = Math.abs(o.vy || 0);
+    sy = 1 + Math.min(0.14, vy / 700);
+    sx = 1 - Math.min(0.08, vy / 1600);
+  }
+  if (o.dashing) { sx *= 1.14; sy *= 0.95; }
+  if (o.hurtT > 0) rot += (Math.random() - 0.5) * 0.18;
+
+  const face = o.face < 0 ? -1 : 1;
+
+  // 冲刺残影
+  if (o.dashing) {
+    for (let i = 3; i >= 1; i--) {
+      ctx.save();
+      ctx.globalAlpha = 0.13 * (4 - i) / 3;
+      ctx.translate(cx - face * i * 7, feetY + bob);
+      ctx.scale(face * sx, sy);
+      ctx.drawImage(img, -w / 2, -h, w, h);
+      ctx.restore();
+    }
+  }
+
+  ctx.save();
+  if (o.blink) ctx.globalAlpha = Math.sin(t * 26) > 0 ? 1 : 0.4;
+  if (o.thinking) { ctx.shadowColor = 'rgba(90,225,255,.95)'; ctx.shadowBlur = 12; }
+  else if (o.hurtT > 0) { ctx.shadowColor = 'rgba(255,95,125,.95)'; ctx.shadowBlur = 10; }
+  else { ctx.shadowColor = 'rgba(120,220,255,.4)'; ctx.shadowBlur = 6; }
+  ctx.translate(cx, feetY + bob);
+  ctx.rotate(rot);
+  ctx.scale(face * sx, sy);
+  ctx.drawImage(img, -w / 2, -h, w, h);
+  ctx.restore();
+  ctx.shadowBlur = 0;
+}
+
 function rr(ctx, x, y, w, h, r) {
   r = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.beginPath();
@@ -19,7 +96,7 @@ function rr(ctx, x, y, w, h, r) {
 }
 
 /* ---------------- 主角：鲸鱼娘 小索 ---------------- */
-export function drawHero(ctx, x, y, o = {}) {
+function drawHeroVector(ctx, x, y, o = {}) {
   const t = o.t || 0;
   const face = o.face || 1;
   const run = o.running ? 1 : 0;
@@ -166,7 +243,7 @@ export function drawHero(ctx, x, y, o = {}) {
 }
 
 /* ---------------- Boss：豆包 ---------------- */
-export function drawDoubao(ctx, x, y, o = {}) {
+function drawDoubaoVector(ctx, x, y, o = {}) {
   const t = o.t || 0;
   const face = o.face || -1;
   const hurt = o.hurtT > 0;
@@ -243,6 +320,38 @@ export function drawDoubao(ctx, x, y, o = {}) {
 }
 
 /* ---------------- 杂兵 ---------------- */
+const BOSS_H = 64;
+const _bossImg = new Image();
+_bossImg.src = './art/sprites/boss-doubao.png';
+
+export function drawDoubao(ctx, x, feetY, o = {}) {
+  const t = o.t || 0;
+  const img = _bossImg;
+  if (!img.complete || !img.naturalWidth) { drawDoubaoVector(ctx, x, feetY, o); return; }
+
+  const face = o.face || -1;
+  const hurt = o.hurtT > 0;
+  const bob = Math.sin(t * 2.2) * 1.4;
+  const h = BOSS_H, w = h * (img.naturalWidth / img.naturalHeight);
+
+  ctx.save();
+  ctx.globalAlpha = 0.42;
+  ctx.fillStyle = 'rgba(2,10,18,.9)';
+  ctx.beginPath(); ctx.ellipse(x, feetY + 1, 19, 4.4, 0, 0, 7); ctx.fill();
+  ctx.restore();
+
+  ctx.save();
+  if (hurt && Math.floor(t * 22) % 2 === 0) ctx.globalAlpha = 0.55;
+  ctx.translate(x, feetY + bob);
+  ctx.scale(face, 1);
+  if (hurt) { ctx.translate((Math.random() - 0.5) * 2.4, 0); }
+  ctx.shadowColor = hurt ? 'rgba(255,120,150,.85)' : 'transparent';
+  ctx.shadowBlur = hurt ? 12 : 0;
+  ctx.drawImage(img, -w / 2, -h, w, h);
+  ctx.restore();
+  ctx.shadowBlur = 0;
+}
+
 export function drawBug(ctx, x, y, o = {}) {
   const t = o.t || 0;
   const face = o.face || 1;
