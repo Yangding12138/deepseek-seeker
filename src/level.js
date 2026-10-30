@@ -12,14 +12,15 @@ export class Level {
     this.solids = [];
 
     // 障碍机柜（横跨整条纵深）
+    // 机柜只占纵深的一段，另一段留通道（近侧挡→走远侧，远侧挡→走近侧）
     this.props = [
-      { x: 560, w: 18 },
-      { x: 1240, w: 20 },
-      { x: 2020, w: 18 },
+      { x: 560, w: 20, y0: PL.y0, y1: PL.y0 + 22 },
+      { x: 1240, w: 22, y0: PL.y1 - 26, y1: PL.y1 },
+      { x: 2020, w: 20, y0: PL.y0, y1: PL.y0 + 22 },
     ];
-    for (const p of this.props) this.solids.push({ x: p.x, y: PL.y0, w: p.w, h: PL.y1 - PL.y0, kind: 'wall' });
+    for (const p of this.props) this.solids.push({ x: p.x, y: p.y0, w: p.w, h: p.y1 - p.y0, hgt: 42, kind: 'wall' });
 
-    this.spawn = { x: 96, y: (PL.y0 + PL.y1) / 2 };
+    this.spawn = { x: 96, y: PL.y1 - 16 };
     this.checkpoints = CFG.level.checkpoint.map((x) => ({ x, y: (PL.y0 + PL.y1) / 2 }));
     this.bossTrigger = CFG.level.bossTrigger;
     this.bossX = 2740;
@@ -115,24 +116,31 @@ export class Level {
     ctx.fillStyle = fog;
     ctx.fillRect(-40, y0 - 6, this.length + 80, 36);
 
-    // ── 机柜障碍（带透视侧面） ──
+    // ── 机柜：在纵深里只占一段，另一段就是绕行通道 ──
     for (const p of this.props) {
-      const top = y0 - 44;
-      const bot = y1 + 12;
-      // 主体
+      const H = 42;
+      const yFar = p.y0 - H, yNear = p.y1 - H;
+      // 顶面
+      ctx.fillStyle = '#24435c';
+      ctx.beginPath();
+      ctx.moveTo(p.x, yFar); ctx.lineTo(p.x + p.w, yFar);
+      ctx.lineTo(p.x + p.w, yNear); ctx.lineTo(p.x, yNear);
+      ctx.closePath(); ctx.fill();
+      // 正面
       const bg = ctx.createLinearGradient(p.x, 0, p.x + p.w, 0);
       bg.addColorStop(0, '#0f1e2c'); bg.addColorStop(0.5, '#1d3348'); bg.addColorStop(1, '#0d1a26');
       ctx.fillStyle = bg;
-      ctx.fillRect(p.x, top, p.w, bot - top);
+      ctx.fillRect(p.x, yNear, p.w, H);
       // 指示灯
-      ctx.fillStyle = 'rgba(53,224,255,.5)';
-      for (let y = top + 6; y < bot - 10; y += 7) ctx.fillRect(p.x + 4, y, p.w - 8, 1.4);
-      ctx.fillStyle = 'rgba(255,180,60,.35)';
-      ctx.fillRect(p.x + 4, top + 2, p.w - 8, 1.2);
-      // 底部投影
-      ctx.fillStyle = 'rgba(0,0,0,.4)';
-      ctx.beginPath();
-      ctx.ellipse(p.x + p.w / 2, bot - 4, p.w * 0.9, 4, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = 'rgba(53,224,255,.55)';
+      for (let yy = yNear + 5; yy < p.y1 - 4; yy += 6) ctx.fillRect(p.x + 4, yy, p.w - 8, 1.4);
+      ctx.fillStyle = 'rgba(255,180,60,.4)';
+      ctx.fillRect(p.x + 4, yNear + 2, p.w - 8, 1.2);
+      // 顶边高光 + 落地影
+      ctx.fillStyle = 'rgba(90,190,240,.22)';
+      ctx.fillRect(p.x, yFar, p.w, 1.2);
+      ctx.fillStyle = 'rgba(0,0,0,.38)';
+      ctx.beginPath(); ctx.ellipse(p.x + p.w / 2, p.y1 + 2, p.w * 0.95, 4, 0, 0, 7); ctx.fill();
     }
 
     ctx.restore();

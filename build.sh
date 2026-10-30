@@ -13,6 +13,6 @@ cat > dist/_headers <<'EOF'
 /art/*
   Cache-Control: public, max-age=31536000, immutable
 /src/*
-  Cache-Control: public, max-age=300
+  Cache-Control: no-cache
 EOF
 du -sh dist

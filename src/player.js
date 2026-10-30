@@ -135,10 +135,20 @@ export class Player {
     if (this.y < PL.y0) { this.y = PL.y0; this.vy = 0; }
     if (this.y > PL.y1) { this.y = PL.y1; this.vy = 0; }
 
-    // 机柜障碍（横跨整个纵深，只能绕行）
+    // 机柜只挡它占的那段纵深，另一段侧身就能绕过去
     for (const s of level.solids) {
       if (s.kind !== 'wall') continue;
-      if (this.x + this.w > s.x && this.x < s.x + s.w) {
+      // 跳得够高就直接跨过去
+      if (s.hgt && this.hz > 12) continue;
+      // 纵深方向：别从侧面穿进货柜
+      if (this.cx > s.x - 3 && this.cx < s.x + s.w + 3 &&
+          this.y > s.y - 5 && this.y < s.y + s.h + 5) {
+        this.y = this.y < s.y + s.h / 2 ? s.y - 5 : s.y + s.h + 5;
+        this.vy = 0;
+      }
+      // 水平方向：纵深重叠了才撞墙
+      const inDepth = this.y > s.y && this.y < s.y + s.h;
+      if (inDepth && this.x + this.w > s.x && this.x < s.x + s.w) {
         this.x = this.vx > 0 ? s.x - this.w : s.x + s.w;
         this.vx = 0;
       }
