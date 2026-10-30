@@ -29,13 +29,15 @@ export function drawHero(ctx, cx, feetY, o = {}) {
     return;
   }
 
-  // 脚下投影
-  const sh = o.air ? 0.28 : 0.42;
+  // 地面投影（跟纵深站脚点走，随跳跃高度变小变淡）
+  const gY = o.groundY ?? feetY;
+  const lift = Math.max(0, gY - feetY);
+  const k = Math.max(0.18, 1 - lift / 130);
   ctx.save();
-  ctx.globalAlpha = sh;
+  ctx.globalAlpha = (o.air ? 0.3 : 0.42) * k;
   ctx.fillStyle = 'rgba(2,10,18,.9)';
   ctx.beginPath();
-  ctx.ellipse(cx, feetY + 1, o.air ? 8 : 11, o.air ? 2.2 : 3, 0, 0, 7);
+  ctx.ellipse(cx, gY + 1, (o.air ? 8 : 11) * k, (o.air ? 2.2 : 3) * k, 0, 0, 7);
   ctx.fill();
   ctx.restore();
 
@@ -401,7 +403,11 @@ export function drawGhost(ctx, x, y, o = {}) {
   g.addColorStop(0, 'rgba(180,140,255,.95)');
   g.addColorStop(1, 'rgba(90,60,180,0)');
   ctx.fillStyle = g;
-  ctx.beginPath(); ctx.arc(0, -8, 11, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(0, -8, 12.5, 0, 7); ctx.fill();
+  // 轮廓描亮，避免暗背景里糊成一团
+  ctx.strokeStyle = 'rgba(212,186,255,.75)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(0, -8, 9.4, 0, 7); ctx.stroke();
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.arc(-2.6, -9, 1.5, 0, 7); ctx.fill();
   ctx.beginPath(); ctx.arc(2.6, -9, 1.5, 0, 7); ctx.fill();

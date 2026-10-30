@@ -99,7 +99,8 @@ export const Input = {
     knob.style.transform = `translate(${dx}px,${dy}px)`;
     this.left = dx < -12;
     this.right = dx > 12;
-    this.down = dy > 26;
+    this.up = dy < -16;
+    this.down = dy > 16;
   },
 
   // 每帧开始：计算边沿触发

@@ -2,13 +2,15 @@ import { CFG } from './config.js';
 import { drawDoubao, drawPearl, drawPuddle } from './render.js';
 
 const B = CFG.boss;
+const PL = CFG.plane;
 
+// 豆包：站在平面上，珍珠弹带高度（hz），糖水铺在地面的某个纵深位置
 export class Doubao {
-  constructor(x, groundY) {
+  constructor(x, y) {
     this.x = x;
-    this.groundY = groundY;
-    this.y = groundY;
-    this.w = 34; this.h = 44;
+    this.y = y ?? (PL.y0 + PL.y1) / 2;
+    this.w = 34; this.h = 52;
+    this.hz = 0;
     this.hp = B.hp; this.maxHp = B.hp;
     this.face = -1;
     this.t = 0;
@@ -24,12 +26,15 @@ export class Doubao {
     this.puddles = [];
     this.sweepT = 0;
     this.homeX = x;
+    this.homeY = this.y;
     this.say = '';
     this.sayT = 0;
   }
 
   get cx() { return this.x; }
-  get cy() { return this.y - this.h * 0.6; }
+  get feet() { return this.y; }
+  get cy() { return this.y - this.h * 0.55; }
+  get midHz() { return this.h * 0.55; }
   get phase2() { return this.hp < this.maxHp * 0.5; }
 
   update(dt, player, game) {
@@ -43,13 +48,16 @@ export class Doubao {
       return;
     }
 
-    // 面向玩家
     this.face = player.cx < this.x ? -1 : 1;
 
     const spd = this.phase2 ? 0.62 : 1;
     this.pearlCd -= dt;
     this.sweepCd -= dt;
     this.summonCd -= dt;
+
+    // 缓慢在纵深上跟着玩家（压迫感）
+    const wantY = Math.max(PL.y0 + 8, Math.min(PL.y1 - 6, player.y));
+    this.y += Math.sign(wantY - this.y) * 14 * dt;
 
     // 横扫
     if (this.sweepT > 0) {
@@ -58,7 +66,7 @@ export class Doubao {
       this.x += dir * 205 * dt;
       this.x = Math.max(this.homeX - 170, Math.min(this.homeX + 30, this.x));
       if (this._hits(player) && player.invuln <= 0) player.hurt(B.touchDmg, player.cx < this.x ? -1 : 1);
-      if (this.sweepT <= 0) { this.x = this.homeX; }
+      if (this.sweepT <= 0) this.x = this.homeX;
       return;
     }
 
@@ -75,14 +83,12 @@ export class Doubao {
     if (this.summonCd <= 0) {
       this.summonCd = B.summonCd * spd;
       for (let i = 0; i < 2; i++) {
-        game.spawnEnemy('bug', this.x - 40 - i * 26, this.groundY);
+        game.spawnEnemy('bug', this.x - 40 - i * 26, this.y + (i ? 8 : -8));
       }
       this.sayT = 1.4; this.say = '再来两杯。';
     }
 
-    // 接触伤害
     if (this._hits(player) && player.invuln <= 0) player.hurt(B.touchDmg, player.cx < this.x ? -1 : 1);
-
     this._updatePearls(dt, player);
   }
 
@@ -90,12 +96,14 @@ export class Doubao {
     const n = this.phase2 ? 5 : 3;
     const dir = this.face;
     for (let i = 0; i < n; i++) {
-      const spread = (i - (n - 1) / 2) * 0.22;
+      const spread = (i - (n - 1) / 2) / Math.max(1, n - 1);   // -0.5 .. 0.5
       this.pearls.push({
         x: this.x - dir * 12,
-        y: this.y - 44,
-        vx: dir * (110 + Math.random() * 40) * Math.cos(spread),
-        vy: (-190 - Math.random() * 40) + spread * 90,
+        y: this.y,
+        hz: 42,
+        vx: dir * (108 + Math.random() * 36),
+        vy: spread * 46,          // 纵深散开
+        vhz: 120 + Math.random() * 40,
         r: 4.4,
         life: 3,
       });
@@ -105,19 +113,23 @@ export class Doubao {
   _updatePearls(dt, player) {
     for (let i = this.pearls.length - 1; i >= 0; i--) {
       const p = this.pearls[i];
-      p.vy += CFG.gravity * 0.85 * dt;
+      p.vhz -= CFG.gravity * 0.8 * dt;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
+      p.hz += p.vhz * dt;
       p.life -= dt;
-      // 命中玩家
+
+      // 命中玩家（3D：水平 + 纵深 + 高度）
       if (player.invuln <= 0 &&
-          Math.hypot(p.x - player.cx, p.y - player.cy) < p.r + 7) {
+          Math.abs(p.x - player.cx) < p.r + 7 &&
+          Math.abs(p.y - player.y) < PL.dyTol + 2 &&
+          Math.abs(p.hz - (player.hz + 14)) < 20) {
         player.hurt(B.dmg, Math.sign(p.vx) || 1);
         this.pearls.splice(i, 1);
         continue;
       }
-      if (p.y >= this.groundY - 1 || p.life <= 0) {
-        this.puddles.push({ x: p.x, y: this.groundY, r: 24, life: 4.2 });
+      if (p.hz <= 0 || p.life <= 0) {
+        this.puddles.push({ x: p.x, y: Math.max(PL.y0, Math.min(PL.y1, p.y)), r: 24, life: 4.2 });
         this.pearls.splice(i, 1);
       }
     }
@@ -128,17 +140,18 @@ export class Doubao {
     }
   }
 
-  // 玩家是否站在糖水里
+  // 玩家是否站在糖水里（要求同一纵深）
   slowFactor(player) {
     for (const d of this.puddles) {
-      if (Math.abs(player.cx - d.x) < d.r && Math.abs(player.feet - d.y) < 8) return 0.55;
+      if (Math.abs(player.cx - d.x) < d.r && Math.abs(player.y - d.y) < PL.dyTol) return 0.55;
     }
     return 1;
   }
 
   _hits(p) {
-    return p.x < this.x + 17 && p.x + p.w > this.x - 17 &&
-           p.y + p.h > this.y - 60 && p.y < this.y;
+    return Math.abs(p.cx - this.x) < 17 + p.w * 0.4 &&
+           Math.abs(p.y - this.y) < PL.dyTol &&
+           p.hz < 34;
   }
 
   hit(dmg) {
@@ -151,9 +164,10 @@ export class Doubao {
       this.sayT = 4;
       for (let i = 0; i < 14; i++) {
         this.pearls.push({
-          x: this.x, y: this.y - 40,
+          x: this.x, y: this.y, hz: 40,
           vx: (Math.random() - 0.5) * 220,
-          vy: -120 - Math.random() * 150,
+          vy: (Math.random() - 0.5) * 40,
+          vhz: 120 + Math.random() * 150,
           r: 2.6, life: 2.2,
         });
       }
@@ -161,24 +175,28 @@ export class Doubao {
     return this.dead;
   }
 
-  draw(ctx) {
+  draw(ctx, scale) {
+    const s = (scale ?? 1) * 1.28;
     ctx.save();
-    // 视觉尺寸放大（判定区同步放宽）
+    ctx.fillStyle = 'rgba(0,0,0,.38)';
+    ctx.beginPath();
+    ctx.ellipse(this.x, this.y + 2, 16 * s, 4 * s, 0, 0, 7); ctx.fill();
     ctx.translate(this.x, this.y);
-    ctx.scale(1.35, 1.35);
-    ctx.translate(-this.x, -this.y);
+    ctx.scale(s, s);
     if (this.hurtT > 0) ctx.globalAlpha = 0.7;
     if (this.dead) {
       ctx.globalAlpha = Math.max(0, 1 - this.deadT * 0.6);
-      ctx.translate(0, Math.min(14, this.deadT * 26));
+      ctx.translate(0, Math.min(10, this.deadT * 20));
     }
-    drawDoubao(ctx, this.x, this.y, { t: this.t, face: this.face, hurtT: this.hurtT });
+    drawDoubao(ctx, 0, 0, { t: this.t, face: this.face, hurtT: this.hurtT });
     ctx.restore();
 
+    // 糖水铺在地面（按纵深位置画）
     for (const d of this.puddles) {
       const a = Math.min(0.42, d.life * 0.2);
       drawPuddle(ctx, d.x, d.y, d.r, a);
     }
-    for (const p of this.pearls) drawPearl(ctx, p.x, p.y, p.r);
+    // 珍珠按高度画在纵深位置上
+    for (const p of this.pearls) drawPearl(ctx, p.x, p.y - p.hz, p.r);
   }
 }

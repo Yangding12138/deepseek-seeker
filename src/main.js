@@ -9,6 +9,7 @@ import { drawHero, rr } from './render.js';
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d', { alpha: false });
 const { W, H } = CFG;
+const PL = CFG.plane;
 
 let dpr = 1;
 function resize() {
@@ -150,11 +151,11 @@ function doRespawn() {
   p.energy = 0;
   G.bullets.length = 0;
   if (inBoss) {
-    p.respawn(G.level.bossTrigger + 10, G.level.groundY);
+    p.respawn(G.level.bossTrigger + 10, G.level.bossY);
     const b = G.boss;
     b.hp = b.maxHp; b.state = 'idle'; b.stateT = 0; b.pearlCd = 1.6;
     b.sweepCd = 2.0; b.summonCd = 3.0; b.pearls.length = 0; b.puddles.length = 0; b.sweepT = 0;
-    b.x = b.homeX; b.hurtT = 0;
+    b.x = b.homeX; b.y = b.homeY; b.hurtT = 0;
   } else {
     p.respawn(G.checkpoint.x, G.checkpoint.y);
     G.enemies = G.enemies.filter(e => !e.dead);
@@ -165,8 +166,38 @@ function doRespawn() {
   sfx('respawn');
 }
 
+// 自动索敌：优先锁定最近的目标（含空中飞行的幽灵），没有目标就沿朝向平射
+// 自动索敌：空中目标优先（地面敌人靠近了再瞄，远的直接平射）
+function aimedShot(e) {
+  const P = CFG.player;
+  let best = null, bestScore = 1e9;
+  const consider = (t) => {
+    const dx = t.cx - e.x, dy = t.y - e.y, dz = t.midHz - e.hz;
+    if (dx * e.face < -30) return;                     // 身后的不管
+    const air = t.midHz > 26;
+    const d = Math.hypot(dx, dy, dz);
+    if (d > (air ? P.aimAssist : P.aimAssist * 0.45)) return;
+    const score = d * (air ? 0.5 : 1) * (1 - 0.2 * Math.min(1, Math.abs(dy) / 44));
+    if (score < bestScore) { bestScore = score; best = t; }
+  };
+  for (const en of G.enemies) if (!en.dead) consider(en);
+  if (G.boss && !G.boss.dead) consider(G.boss);
+
+  const sp = P.shotSpeed;
+  const base = { x: e.x, y: e.y, hz: e.hz, r: 2.7, dmg: e.dmg, life: 1.5, from: 'p' };
+  if (best) {
+    G.lockTarget = best; G.lockT = 0.32;
+    const dx = best.cx - e.x, dy = best.y - e.y, dz = best.midHz - e.hz;
+    const L = Math.hypot(dx, dy, dz) || 1;
+    return Object.assign(base, { vx: dx / L * sp, vy: dy / L * sp, vhz: dz / L * sp, homing: best });
+  }
+  // 没目标时带一点上抛，略微抬高的单位也能喂到
+  return Object.assign(base, { vx: e.face * sp, vy: 0, vhz: Math.sin(P.shotArc) * sp, homing: null });
+}
+
 function update(dt) {
   G.t += dt;
+  if (G.lockT > 0) G.lockT -= dt;
   const p = G.player;
   const level = G.level;
 
@@ -199,7 +230,7 @@ function update(dt) {
   const ev = p.update(dt, Input, level);
   for (const e of ev) {
     if (e.type === 'shoot') {
-      G.bullets.push({ x: e.x, y: e.y, vx: e.vx, vy: 0, r: 2.6, dmg: e.dmg, life: 1.6, from: 'p' });
+      G.bullets.push(aimedShot(e));
       sfx('shot');
     } else if (e.type === 'jump') sfx('jump');
     else if (e.type === 'dash') {
@@ -238,7 +269,7 @@ function update(dt) {
   while (G.spawnIdx < level.enemySpawns.length &&
          level.enemySpawns[G.spawnIdx].x < p.cx + W * 0.9) {
     const s = level.enemySpawns[G.spawnIdx++];
-    spawnEnemy(s.type, s.x, s.y || level.groundY);
+    spawnEnemy(s.type, s.x, s.y);
   }
 
   // 敌人
@@ -256,14 +287,30 @@ function update(dt) {
   }
   for (let i = G.bullets.length - 1; i >= 0; i--) {
     const b = G.bullets[i];
-    b.x += b.vx * worldDt; b.y += b.vy * worldDt; b.life -= worldDt;
-    if (b.life <= 0) { G.bullets.splice(i, 1); continue; }
+    // 轻度追踪：锁定的目标还活着，就慢慢把弹道掰过去
+    if (b.homing && !b.homing.dead) {
+      const tg = b.homing;
+      const dx = tg.cx - b.x, dy = tg.y - b.y, dz = tg.midHz - b.hz;
+      const L = Math.hypot(dx, dy, dz) || 1;
+      const sp = Math.hypot(b.vx, b.vy, b.vhz) || 1;
+      const k = Math.min(1, 3.2 * worldDt);
+      b.vx += (dx / L * sp - b.vx) * k;
+      b.vy += (dy / L * sp - b.vy) * k;
+      b.vhz += (dz / L * sp - b.vhz) * k;
+    }
+    b.x += b.vx * worldDt; b.y += b.vy * worldDt; b.hz += b.vhz * worldDt;
+    b.life -= worldDt;
+    if (b.life <= 0 || b.hz < -40 || b.hz > 220 || b.x < -80 || b.x > level.length + 80) {
+      G.bullets.splice(i, 1); continue;
+    }
     let hitSomething = false;
     for (const en of G.enemies) {
       if (en.dead) continue;
-      if (b.x > en.x && b.x < en.x + en.w && b.y > en.y && b.y < en.y + en.h) {
+      if (Math.abs(b.x - en.cx) < b.r + en.w * 0.5 &&
+          Math.abs(b.y - en.y) < PL.dyTol &&
+          Math.abs(b.hz - en.midHz) < 18) {
         p.addEnergy(CFG.think.gainHit);
-        addParticle(b.x, b.y, '#7fe9ff', 3);
+        addParticle(b.x, b.y - b.hz, '#7fe9ff', 3);
         if (en.hit(b.dmg)) { onKill(en); G.hitstop = Math.max(G.hitstop, CFG.feel.hitstopKill); }
         else { sfx('hit'); G.hitstop = Math.max(G.hitstop, CFG.feel.hitstopLight); }
         hitSomething = true;
@@ -271,10 +318,11 @@ function update(dt) {
       }
     }
     if (!hitSomething && G.boss && !G.boss.dead &&
-        b.x > G.boss.x - 18 && b.x < G.boss.x + 18 &&
-        b.y > G.boss.y - 60 && b.y < G.boss.y) {
+        Math.abs(b.x - G.boss.cx) < 20 + b.r &&
+        Math.abs(b.y - G.boss.y) < PL.dyTol + 3 &&
+        b.hz > 1 && b.hz < G.boss.h * 1.05) {
       p.addEnergy(CFG.think.gainHit);
-      addParticle(b.x, b.y, '#ffc2d8', 3);
+      addParticle(b.x, b.y - b.hz, '#ffc2d8', 3);
       if (G.boss.hit(b.dmg)) onBossDefeat();
       else { sfx('hit'); G.hitstop = Math.max(G.hitstop, CFG.feel.hitstopLight); }
       hitSomething = true;
@@ -285,7 +333,7 @@ function update(dt) {
   // Boss
   if (!G.bossActive && p.cx > level.bossTrigger) {
     G.bossActive = true;
-    G.boss = new Doubao(level.bossX, level.groundY ?? CFG.groundY);
+    G.boss = new Doubao(level.bossX, level.bossY);
     G.hintT = 0;
   }
   if (G.boss && !G.boss.dead) {
@@ -321,12 +369,12 @@ function update(dt) {
 function burstEffect(e) {
   for (const en of G.enemies) {
     if (en.dead) continue;
-    if (Math.hypot(en.cx - e.x, en.cy - e.y) < e.r) {
+    if (Math.hypot(en.cx - e.x, en.y - e.y, en.midHz - e.hz) < e.r) {
       if (en.hit(e.dmg)) onKill(en);
     }
   }
   if (G.boss && !G.boss.dead) {
-    if (Math.hypot(G.boss.cx - e.x, G.boss.cy - e.y) < e.r + 14) {
+    if (Math.hypot(G.boss.cx - e.x, G.boss.y - e.y, G.boss.midHz - e.hz) < e.r + 14) {
       if (G.boss.hit(e.dmg)) onBossDefeat();
     }
     G.boss.pearls.length = 0;
@@ -369,8 +417,12 @@ function addParticle(x, y, color, spd) {
 
 function shake(t, m) { shakeT = Math.max(shakeT, t); shakeMag = m; }
 
+// 3D 接触判定（水平 + 纵深 + 高度）
 function overlap(a, b) {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  const ac = a.hz + 14, bc = (b.midHz ?? b.hz) + 6;
+  return Math.abs(a.cx - b.cx) < (a.w + b.w) * 0.5 &&
+         Math.abs(a.y - b.y) < PL.dyTol &&
+         Math.abs(ac - bc) < 24;
 }
 
 /* ---------------- 绘制 ---------------- */
@@ -390,19 +442,66 @@ function draw(dt) {
   ctx.save();
   ctx.translate(-camX, 0);
 
-  // 地面敌人 / 幽灵
-  for (const en of G.enemies) if (!en.dead) en.draw(ctx, G.t);
-  if (G.boss) G.boss.draw(ctx);
+  // 实体按纵深排序（远的先画，近的盖住远的）
+  const ents = [];
+  for (const en of G.enemies) {
+    if (en.dead) continue;
+    ents.push({ y: en.y, f: () => en.draw(ctx, G.t, level.scaleAt(en.y)) });
+  }
+  if (G.boss) ents.push({ y: G.boss.y, f: () => G.boss.draw(ctx, level.scaleAt(G.boss.y)) });
+  if (!p.dead) {
+    ents.push({
+      y: p.y, f: () => {
+        const sc = level.scaleAt(p.y);
+        ctx.save();
+        ctx.translate(p.cx, p.y);
+        ctx.scale(sc, sc);
+        drawHero(ctx, 0, -p.hz, {
+          t: p.animT, face: p.face, running: p.running || p.walkDir !== 0,
+          air: !p.onGround, dashing: p.dashT > 0,
+          thinking: p.thinking, hurtT: p.hurtT,
+          vz: p.vz, blink: p.invuln > 0.05, groundY: 0,
+        });
+        ctx.restore();
+      }
+    });
+  }
+  ents.sort((a, b) => a.y - b.y);
+  for (const e of ents) e.f();
+
   // 子弹
-  for (const b of G.bullets) {
+  // 索敌锁定准星：告诉玩家这一发瞄的是谁（空中的也能锁）
+  if (G.lockTarget && !G.lockTarget.dead && G.lockT > 0) {
+    const lt = G.lockTarget;
+    const lx = lt.cx, ly = lt.y - lt.midHz;
+    const rr2 = 13 + Math.sin(G.t * 16) * 1.4;
     ctx.save();
+    ctx.strokeStyle = 'rgba(120,240,255,' + Math.min(1, G.lockT * 4).toFixed(2) + ')';
+    ctx.lineWidth = 1.2;
+    for (let q = 0; q < 4; q++) {
+      ctx.beginPath();
+      ctx.arc(lx, ly, rr2, q * Math.PI / 2 + 0.3, (q + 1) * Math.PI / 2 - 0.3);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+  for (const b of G.bullets) {
+    const sy = b.y - b.hz;
+    const sc = level.scaleAt(b.y);
+    ctx.save();
+    ctx.translate(b.x, sy);
+    ctx.scale(sc, sc);
     ctx.shadowColor = '#7fe9ff';
     ctx.shadowBlur = 7;
     ctx.fillStyle = '#eaffff';
-    ctx.beginPath(); ctx.ellipse(b.x, b.y, 3.0, 1.9, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(0, 0, 3.6, 2.5, 0, 0, 7); ctx.fill();
     ctx.restore();
-    ctx.fillStyle = 'rgba(90,225,255,.45)';
-    ctx.beginPath(); ctx.ellipse(b.x - b.vx * 0.016, b.y, 9, 1.3, 0, 0, 7); ctx.fill();
+    // 拖尾（沿速度反方向）
+    const tl = Math.hypot(b.vx, b.vy, b.vhz) || 1;
+    ctx.fillStyle = 'rgba(110,235,255,.55)';
+    ctx.beginPath();
+    ctx.ellipse(b.x - b.vx / tl * 12, sy + b.vhz / tl * 12, 14, 1.9, Math.atan2(-b.vhz, b.vx), 0, 7);
+    ctx.fill();
   }
   // 粒子
   for (const q of G.particles) {
@@ -412,15 +511,6 @@ function draw(dt) {
   }
   ctx.globalAlpha = 1;
 
-  // 玩家
-  if (!p.dead) {
-    drawHero(ctx, p.cx, p.feet, {
-      t: p.animT, face: p.face, running: p.running,
-      air: !p.onGround, dashing: p.dashT > 0,
-      thinking: p.thinking, hurtT: p.hurtT,
-      vy: p.vy, blink: p.invuln > 0.05,
-    });
-  }
   ctx.restore();
 
   // 思考模式滤镜
@@ -565,7 +655,7 @@ function drawHUD() {
     ctx.textAlign = 'center';
     ctx.font = '7px -apple-system,sans-serif';
     ctx.fillStyle = '#cfeaff';
-    ctx.fillText(Input.touch ? '左摇杆移动 · 右「跳 / 弹 / 冲撞」' : 'A D 移动 · 空格跳 · U 射击 · J 冲撞 · E 思考', W / 2, H - 16);
+    ctx.fillText(Input.touch ? '左摇杆四向移动 · 右「跳 / 弹 / 冲撞」' : 'WASD 四向移动 · 空格跳 · U 射击 · J 冲撞 · E 思考', W / 2, H - 16);
     ctx.globalAlpha = 1;
   }
   ctx.restore();
@@ -702,7 +792,7 @@ window.__dev = {
   get state() { return state; },
   setState(s) { state = s; overlayT = 0; },
   newGame,
-  warp(x) { if (G) { G.player.x = x; G.player.y = CFG.groundY - G.player.h; } },
+  warp(x, y) { if (G) { G.player.x = x; if (y != null) G.player.y = y; } },
   kill() { if (G && !G.player.dead) { G.player.hp = 0; G.player.dead = true; G.deathT = 0; G.deaths++; sfx('die'); shake(0.75, 7); } },
   hurt(n) { if (G) G.player.hurt(n, G.player.cx > 0 ? 1 : -1); },
 };
